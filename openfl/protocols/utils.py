@@ -6,7 +6,7 @@
 
 from openfl.protocols import base_pb2
 from openfl.utilities import TensorKey
-
+from memory_profiler import profile
 
 def model_proto_to_bytes_and_metadata(model_proto):
     """Convert the model protobuf to bytes and metadata.
@@ -96,7 +96,6 @@ def bytes_and_metadata_to_model_proto(bytes_dict, model_id, model_version, is_de
             )
         )
     return base_pb2.ModelProto(header=model_header, tensors=tensor_protos)
-
 
 def construct_named_tensor(tensor_key, nparray, transformer_metadata, lossless):
     """Construct named tensor.
@@ -205,6 +204,8 @@ def construct_model_proto(tensor_dict, round_number, tensor_pipe):
                 lossless=True,
             )
         )
+
+    del bytes_data, transformer_metadata
 
     return base_pb2.ModelProto(tensors=named_tensors)
 
@@ -318,6 +319,7 @@ def datastream_to_proto(proto, stream, logger=None):
         raise RuntimeError(f"Received empty stream message of type {type(proto)}")
 
 
+@profile
 def proto_to_datastream(proto, logger, max_buffer_size=(2 * 1024 * 1024)):
     """Convert the protobuf to the datastream for the remote connection.
 
@@ -343,6 +345,8 @@ def proto_to_datastream(proto, logger, max_buffer_size=(2 * 1024 * 1024)):
         chunk = npbytes[i : i + buffer_size]
         reply = base_pb2.DataStream(npbytes=chunk, size=len(chunk))
         yield reply
+    
+    del npbytes
 
 
 def get_headers(context) -> dict:

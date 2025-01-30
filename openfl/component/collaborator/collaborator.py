@@ -8,7 +8,15 @@ import logging
 from enum import Enum
 from time import sleep
 from typing import List, Optional, Tuple
+import gc
+import pprint
 
+import psutil
+import os
+from memory_profiler import profile
+import sys
+import tracemalloc
+from pympler import asizeof
 import openfl.callbacks as callbacks_module
 from openfl.databases import TensorDB
 from openfl.pipelines import NoCompressionPipeline, TensorCodec
@@ -46,6 +54,8 @@ class OptTreatment(Enum):
     CONTINUE_LOCAL = 2
     CONTINUE_GLOBAL = 3
 
+def log_size_in_mib(size_in_bytes):
+    return size_in_bytes / (1024 ** 2)
 
 class Collaborator:
     r"""The Collaborator object class.
@@ -70,6 +80,16 @@ class Collaborator:
         \* - Plan setting.
     """
 
+    def _print_memory_usage(self):
+        # Get the current process ID
+        process = psutil.Process(os.getpid())
+        # Get memory usage in bytes
+        memory_info = process.memory_info()
+        # Convert to MB for readability
+        memory_usage_mb = memory_info.rss / (1024 ** 2)
+        print(f"Memory usage: {memory_usage_mb:.2f} MB")
+
+    @profile
     def __init__(
         self,
         collaborator_name,
@@ -131,6 +151,11 @@ class Collaborator:
 
         self.task_config = task_config
 
+
+        memory_used = asizeof.asizeof(self.tensor_db)
+        logger.info(
+            "Size of tensor_db when init %s", memory_used,
+        )
         # RESET/CONTINUE_LOCAL/CONTINUE_GLOBAL
         if hasattr(OptTreatment, opt_treatment):
             self.opt_treatment = OptTreatment[opt_treatment]
@@ -156,6 +181,10 @@ class Collaborator:
             origin=self.collaborator_name,
         )
 
+        #gc.enable()
+        #gc.set_debug(gc.DEBUG_LEAK)
+        #gc.callbacks.append(gc_callback)
+
     def set_available_devices(self, cuda: Tuple[str] = ()):
         """Set available CUDA devices.
 
@@ -165,6 +194,7 @@ class Collaborator:
         """
         self.cuda_devices = cuda
 
+    @profile
     def run(self):
         """Run the collaborator."""
         # Experiment begin
@@ -180,6 +210,9 @@ class Collaborator:
                 sleep(sleep_time)
                 continue
 
+            print("Before beginning round : " + str(round_num))
+            self._print_memory_usage()
+            
             # Round begin
             logger.info("Received Tasks: %s", tasks)
             self.callbacks.on_round_begin(round_num)
@@ -189,13 +222,35 @@ class Collaborator:
             for task in tasks:
                 metrics = self.do_task(task, round_num)
                 logs.update(metrics)
+                metrics = None
+                del metrics
+
+            print("Before clean up")
+            self._print_memory_usage()
+            self.tensor_db.get_tensor_db_size()
 
             # Round end
             self.tensor_db.clean_up(self.db_store_rounds)
             self.callbacks.on_round_end(round_num, logs)
 
+            print("After clean up")
+            self.tensor_db.get_tensor_db_size()
+
+            #gc.collect()
+
+            #leaked_objects = gc.garbage
+            #print(f"Leaked objects: {leaked_objects}")
+
+            # for obj in gc.garbage:
+            #     print(f"References to {obj}:")
+            #     pprint.pprint(gc.get_referrers(obj))
+
+            self._print_memory_usage()
+
         # Experiment end
         self.callbacks.on_experiment_end()
+        print("After experiment ending : ")
+        self._print_memory_usage()
         logger.info("Received shutdown signal. Exiting...")
 
     def run_simulation(self):
@@ -237,6 +292,7 @@ class Collaborator:
 
         return tasks, round_number, sleep_time, time_to_quit
 
+    @profile
     def do_task(self, task, round_number) -> dict:
         """Perform the specified task.
 
@@ -301,7 +357,7 @@ class Collaborator:
             # New interactive python API
             # New `Core` TaskRunner contains registry of tasks
             func = self.task_runner.TASK_REGISTRY[func_name]
-            logger.debug("Using Interactive Python API")
+            logger.info("Using Interactive Python API")
 
             # So far 'kwargs' contained parameters read from the plan
             # those are parameters that the eperiment owner registered for
@@ -319,7 +375,10 @@ class Collaborator:
             # TaskRunner subclassing API
             # Tasks are defined as methods of TaskRunner
             func = getattr(self.task_runner, func_name)
-            logger.debug("Using TaskRunner subclassing API")
+            logger.info("Using TaskRunner subclassing API")
+        
+        print(f"Before running task: {func_name}")
+        self._print_memory_usage()
 
         global_output_tensor_dict, local_output_tensor_dict = func(
             col_name=self.collaborator_name,
@@ -328,13 +387,38 @@ class Collaborator:
             **kwargs,
         )
 
+        memory_used_global_output = log_size_in_mib(asizeof.asizeof(global_output_tensor_dict))
+        memory_used_local_output = log_size_in_mib(asizeof.asizeof(local_output_tensor_dict))
+        logger.info(
+            "Size of local tensor_dict in memory before caching %s: %s %s",
+            round_number, memory_used_global_output,memory_used_local_output
+        )
+
+        print("After running task")
+        self._print_memory_usage()
+
+        # Log size after caching
+        print("Before caching [do_task] :")
+        self.tensor_db.get_tensor_db_size()  
+
         # Save global and local output_tensor_dicts to TensorDB
         self.tensor_db.cache_tensor(global_output_tensor_dict)
         self.tensor_db.cache_tensor(local_output_tensor_dict)
 
+        # Log size after caching
+        print("After caching [do_task] :")
+        self.tensor_db.get_tensor_db_size()  
+
         # send the results for this tasks; delta and compression will occur in
         # this function
         metrics = self.send_task_results(global_output_tensor_dict, round_number, task_name)
+        print("After self.send_task_results")
+        self._print_memory_usage()
+
+        del global_output_tensor_dict
+        del local_output_tensor_dict
+        del input_tensor_dict
+        gc.collect()
         return metrics
 
     def get_numpy_dict_for_tensorkeys(self, tensor_keys):
@@ -359,7 +443,7 @@ class Collaborator:
         """
         # try to get from the store
         tensor_name, origin, round_number, report, tags = tensor_key
-        logger.debug("Attempting to retrieve tensor %s from local store", tensor_key)
+        logger.info("Attempting to retrieve tensor %s from local store", tensor_key)
         nparray = self.tensor_db.get_tensor_from_cache(tensor_key)
 
         # if None and origin is our client, request it from the client
@@ -374,7 +458,7 @@ class Collaborator:
                         TensorKey(tensor_name, origin, prior_round, report, tags)
                     )
                     if nparray is not None:
-                        logger.debug(
+                        logger.info(
                             f"Found tensor {tensor_name} in local TensorDB for round {prior_round}"
                         )
                         return nparray
@@ -386,7 +470,7 @@ class Collaborator:
             tensor_dependencies = self.tensor_codec.find_dependencies(
                 tensor_key, self.delta_updates
             )
-            logger.debug(
+            logger.info(
                 "Unable to get tensor from local store..."
                 "attempting to retrieve from client len tensor_dependencies"
                 f" tensor_key {tensor_key}"
@@ -409,6 +493,9 @@ class Collaborator:
                         creates_model=True,
                     )
                     self.tensor_db.cache_tensor({new_model_tk: nparray})
+                    # Log size after caching
+                    print("After caching [get_data_for_tensorkey] :")
+                    self.tensor_db.get_tensor_db_size()  
                 else:
                     logger.info(
                         "Could not find previous model layer.Fetching latest layer from aggregator"
@@ -435,7 +522,11 @@ class Collaborator:
                     tensor_key, require_lossless=True
                 )
         else:
-            logger.debug("Found tensor %s in local TensorDB", tensor_key)
+            logger.info("Found tensor %s in local TensorDB", tensor_key)
+        
+        # Print the size of nparray in MiB
+        nparray_size_mib = nparray.nbytes / (1024 ** 2)
+        print(f"Size of nparray: {nparray_size_mib:.2f} MiB")
 
         return nparray
 
@@ -461,7 +552,7 @@ class Collaborator:
         """
         tensor_name, origin, round_number, report, tags = tensor_key
 
-        logger.debug("Requesting aggregated tensor %s", tensor_key)
+        logger.info("Requesting aggregated tensor %s", tensor_key)
         tensor = self.client.get_aggregated_tensor(
             self.collaborator_name,
             tensor_name,
@@ -477,9 +568,14 @@ class Collaborator:
 
         # cache this tensor
         self.tensor_db.cache_tensor({tensor_key: nparray})
+        
+        # Log size after caching
+        print("After caching [get_aggregated_tensor] :")
+        self.tensor_db.get_tensor_db_size()
 
         return nparray
 
+    @profile
     def send_task_results(self, tensor_dict, round_number, task_name) -> dict:
         """Send task results to the aggregator.
 
@@ -504,7 +600,7 @@ class Collaborator:
         if "valid" in task_name:
             data_size = self.task_runner.get_valid_data_size()
 
-        logger.debug("%s data size = %s", task_name, data_size)
+        logger.info("%s data size = %s", task_name, data_size)
 
         metrics = {}
         for tensor in tensor_dict:
@@ -515,6 +611,9 @@ class Collaborator:
                 value = float(tensor_dict[tensor])
                 metrics.update({f"{self.collaborator_name}/{task_name}/{tensor_name}": value})
 
+        print("Before sending send_local_task_results")
+        self._print_memory_usage()
+
         self.client.send_local_task_results(
             self.collaborator_name,
             round_number,
@@ -523,6 +622,10 @@ class Collaborator:
             named_tensors,
         )
 
+        print("After sending send_local_task_results")
+        self._print_memory_usage()
+
+        del named_tensors
         return metrics
 
     def nparray_to_named_tensor(self, tensor_key, nparray):
@@ -627,5 +730,8 @@ class Collaborator:
             decompressed_nparray = raw_bytes
 
         self.tensor_db.cache_tensor({decompressed_tensor_key: decompressed_nparray})
+        # Log size after caching
+        print("After caching [named_tensor_to_nparray] :")
+        self.tensor_db.get_tensor_db_size()  
 
         return decompressed_nparray

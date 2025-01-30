@@ -6,16 +6,29 @@
 
 from copy import deepcopy
 from typing import Iterator, Tuple
-
+import tracemalloc
 import numpy as np
 import torch
 import torch.nn as nn
 import tqdm
-
+import gc
+import psutil
+import os
+from memory_profiler import profile
+from pympler import asizeof
 from openfl.federated.task.runner import TaskRunner
 from openfl.utilities import Metric, TensorKey, change_tags
 from openfl.utilities.split import split_tensor_dict_for_holdouts
 
+def log_size_in_mib(size_in_bytes):
+    return size_in_bytes / (1024 ** 2)
+
+def print_memory_usage():
+    process = psutil.Process(os.getpid())
+    print(f"[TRAINING] RAM Usage: {process.memory_info().rss / (1024**2):.2f} MiB")
+
+def print_numpy_memory(arr):
+    print(f"[TRAINING] NumPy Memory: {arr.nbytes / (1024**2):.2f} MiB")
 
 class PyTorchTaskRunner(nn.Module, TaskRunner):
     """PyTorch Model class for Federated Learning.
@@ -32,6 +45,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
             dictionary split function.
     """
 
+    @profile
     def __init__(self, device: str = None, loss_fn=None, optimizer=None, **kwargs):
         """Initializes the PyTorchTaskRunner object.
 
@@ -61,6 +75,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
         # not a numpy array
         self.tensor_dict_split_fn_kwargs.update({"holdout_tensor_names": ["__opt_state_needed"]})
 
+    @profile
     def rebuild_model(self, round_num, input_tensor_dict, validation=False):
         """Parse tensor names and update weights of model. Handles the
         optimizer treatment.
@@ -85,6 +100,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
         else:
             self.set_tensor_dict(input_tensor_dict, with_opt_vars=False)
 
+    @profile
     def validate_task(self, col_name, round_num, input_tensor_dict, use_tqdm=False, **kwargs):
         """Validate Task.
 
@@ -127,6 +143,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
         # Empty list represents metrics that should only be stored locally
         return output_tensor_dict, {}
 
+    @profile
     def train_task(
         self,
         col_name,
@@ -157,12 +174,30 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
         # set to "training" mode
         self.train()
         self.to(self.device)
+        
+        tracemalloc.start(25)
+        initial_snapshot = tracemalloc.take_snapshot()
+
         for epoch in range(epochs):
             self.logger.info(f"Run {epoch} epoch of {round_num} round")
             loader = self.data_loader.get_train_loader()
             if use_tqdm:
                 loader = tqdm.tqdm(loader, desc="train epoch")
             metric = self.train_(loader)
+
+        # Take a snapshot after training
+        final_snapshot = tracemalloc.take_snapshot()
+        top_stats = final_snapshot.compare_to(initial_snapshot, key_type="traceback")
+
+        print("\n Top 10 memory differences by function:\n")
+        for index, stat in enumerate(top_stats[:10], start=1):  # Limit to top 50
+            print(f"\n {index}. Memory Increased: {stat.size_diff / 1024:.2f} KiB")
+            for line in stat.traceback.format():  # Show full traceback
+                print(line)
+
+        memory_used_metric = log_size_in_mib(asizeof.asizeof(metric))
+        print("Size of local memory_used_metric in memory %s", memory_used_metric)        
+
         # Output metric tensors (scalar)
         origin = col_name
         tags = ("trained",)
@@ -170,17 +205,26 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
             TensorKey(metric.name, origin, round_num, True, ("metric",)): metric.value
         }
 
+        memory_used_output_metric_dict = log_size_in_mib(asizeof.asizeof(output_metric_dict))
+        print("Size of local memory_used_output_metric_dict in memory %s", memory_used_output_metric_dict)
+
         # output model tensors (Doesn't include TensorKey)
         output_model_dict = self.get_tensor_dict(with_opt_vars=True)
         global_model_dict, local_model_dict = split_tensor_dict_for_holdouts(
             self.logger, output_model_dict, **self.tensor_dict_split_fn_kwargs
         )
 
+        memory_used_output_model_dict = log_size_in_mib(asizeof.asizeof(output_model_dict))
+        print("Size of local output_model_dict in memory %s", memory_used_output_model_dict)
+
         # Create global tensorkeys
         global_tensorkey_model_dict = {
             TensorKey(tensor_name, origin, round_num, False, tags): nparray
             for tensor_name, nparray in global_model_dict.items()
         }
+        memory_used_global_tensorkey_model_dict = log_size_in_mib(asizeof.asizeof(global_tensorkey_model_dict))
+        print("Size of local memory_used_global_tensorkey_model_dict in memory %s", memory_used_global_tensorkey_model_dict)
+
         # Create tensorkeys that should stay local
         local_tensorkey_model_dict = {
             TensorKey(tensor_name, origin, round_num, False, tags): nparray
@@ -198,6 +242,10 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
             **output_metric_dict,
             **global_tensorkey_model_dict,
         }
+
+        memory_used_global_tensor_dict = log_size_in_mib(asizeof.asizeof(global_tensor_dict))
+        print("Size of local memory_used_global_tensor_dict in memory %s", memory_used_global_tensor_dict)
+
         local_tensor_dict = {
             **local_tensorkey_model_dict,
             **next_local_tensorkey_model_dict,
@@ -220,9 +268,14 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
         # and can be loaded when the model is rebuilt
         self.training_round_completed = True
 
+
+        leaked_objects = gc.garbage
+        print("Uncollected objects in train_task : ", leaked_objects)
+
         # Return global_tensor_dict, local_tensor_dict
         return global_tensor_dict, local_tensor_dict
 
+    @profile
     def get_tensor_dict(self, with_opt_vars=False):
         """Return the tensor dictionary.
 
@@ -247,6 +300,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
 
         return state
 
+    @profile
     def _get_weights_names(self, with_opt_vars=False):
         """Get information regarding tensor model layers and optimizer state.
 
@@ -270,6 +324,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
 
         return state
 
+    @profile
     def set_tensor_dict(self, tensor_dict, with_opt_vars=False):
         """Set the tensor dictionary.
 
@@ -304,6 +359,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
             # sanity check that we did not record any state that was not used
             assert len(tensor_dict) == 0
 
+    @profile
     def get_optimizer(self):
         """Get the optimizer of this instance.
 
@@ -312,6 +368,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
         """
         return self.optimizer
 
+    @profile
     def get_required_tensorkeys_for_function(self, func_name, **kwargs):
         """Get the required tensors for specified function that could be called
         as part of a task. By default, this is just all of the layers and
@@ -329,6 +386,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
         else:
             return self.required_tensorkeys_for_function[func_name]
 
+    @profile
     def initialize_tensorkeys_for_functions(self, with_opt_vars=False):
         """Set the required tensors for all publicly accessible task methods.
 
@@ -396,6 +454,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
             for tensor_name in local_model_dict_val
         ]
 
+    @profile
     def load_native(
         self,
         filepath,
@@ -422,6 +481,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
         self.load_state_dict(pickle_dict[model_state_dict_key])
         self.optimizer.load_state_dict(pickle_dict[optimizer_state_dict_key])
 
+    @profile
     def save_native(
         self,
         filepath,
@@ -450,6 +510,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
         }
         torch.save(pickle_dict, filepath)
 
+    @profile
     def reset_opt_vars(self):
         """Reset optimizer variables.
 
@@ -460,6 +521,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
         """
         pass
 
+    @profile
     def train_(self, train_dataloader: Iterator[Tuple[np.ndarray, np.ndarray]]) -> Metric:
         """Train single epoch.
 
@@ -473,6 +535,8 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
         Returns:
             Metric: An object containing name and np.ndarray value.
         """
+        print_memory_usage()  # Before training
+
         losses = []
         for data, target in train_dataloader:
             data, target = torch.tensor(data).to(self.device), torch.tensor(target).to(self.device)
@@ -482,9 +546,16 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
             loss.backward()
             self.optimizer.step()
             losses.append(loss.detach().cpu().numpy())
-        loss = np.mean(losses)
-        return Metric(name=self.loss_fn.__name__, value=np.array(loss))
+        #loss = np.mean(losses)
+        loss_arr = np.array(np.mean(losses))
+        print_numpy_memory(loss_arr)
+        losses = None
+        del losses
+        print_memory_usage()  # After training
+        #return Metric(name=self.loss_fn.__name__, value=np.array(loss))
+        return Metric(name=self.loss_fn.__name__, value=loss_arr)
 
+    @profile
     def validate_(self, validation_dataloader: Iterator[Tuple[np.ndarray, np.ndarray]]) -> Metric:
         """
         Perform validation on PyTorch Model
@@ -516,7 +587,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
         accuracy = val_score / total_samples
         return Metric(name="accuracy", value=np.array(accuracy))
 
-
+@profile
 def _derive_opt_state_dict(opt_state_dict):
     """Separate optimizer tensors from the tensor dictionary.
 
@@ -593,7 +664,7 @@ def _derive_opt_state_dict(opt_state_dict):
 
     return derived_opt_state_dict
 
-
+@profile
 def expand_derived_opt_state_dict(derived_opt_state_dict, device):
     """Expand the optimizer state dictionary.
 
@@ -648,7 +719,7 @@ def expand_derived_opt_state_dict(derived_opt_state_dict, device):
 
     return opt_state_dict
 
-
+@profile
 def _get_optimizer_state(optimizer):
     """Return the optimizer state.
 

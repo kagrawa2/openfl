@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from typing import Iterator, Tuple
-
+from memory_profiler import profile
 from openfl.federated import PyTorchTaskRunner
 from openfl.utilities import Metric
 
@@ -20,7 +20,7 @@ class PyTorchCNN(PyTorchTaskRunner):
     PyTorchTaskRunner inherits from nn.module, so you can define your model
     in the same way that you would for PyTorch
     """
-
+    @profile
     def __init__(self, device="cpu", **kwargs):
         """Initialize.
 
@@ -80,6 +80,7 @@ class PyTorchCNN(PyTorchTaskRunner):
         x = self.fc2(x)
         return x
 
+    @profile
     def train_(
         self, train_dataloader: Iterator[Tuple[np.ndarray, np.ndarray]]
     ) -> Metric:
@@ -107,6 +108,7 @@ class PyTorchCNN(PyTorchTaskRunner):
         loss = np.mean(losses)
         return Metric(name=self.loss_fn.__name__, value=np.array(loss))
 
+    @profile
     def validate_(
         self, validation_dataloader: Iterator[Tuple[np.ndarray, np.ndarray]]
     ) -> Metric:

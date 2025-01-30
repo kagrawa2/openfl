@@ -10,11 +10,15 @@ from typing import Dict, Iterator, Optional
 
 import numpy as np
 import pandas as pd
-
+from memory_profiler import profile
+from pympler import asizeof
+import gc
 from openfl.databases.utilities import ROUND_PLACEHOLDER, _retrieve, _search, _store
 from openfl.interface.aggregation_functions import AggregationFunction
 from openfl.utilities import LocalTensor, TensorKey, change_tags
 
+def log_size_in_mib(size_in_bytes):
+    return size_in_bytes / (1024 ** 2)
 
 class TensorDB:
     """The TensorDB stores a tensor key and the data that it corresponds to.
@@ -30,6 +34,7 @@ class TensorDB:
             on the tensor_db Dataframe.
     """
 
+    @profile
     def __init__(self) -> None:
         """Initializes a new instance of the TensorDB class."""
         types_dict = {
@@ -47,6 +52,7 @@ class TensorDB:
 
         self.mutex = Lock()
 
+    @profile
     def _bind_convenience_methods(self):
         """Bind convenience methods for the TensorDB dataframe to make storage,
         retrieval, and search easier."""
@@ -57,6 +63,7 @@ class TensorDB:
         if not hasattr(self.tensor_db, "search"):
             self.tensor_db.search = MethodType(_search, self.tensor_db)
 
+    @profile
     def __repr__(self) -> str:
         """Returns the string representation of the TensorDB object.
 
@@ -67,6 +74,7 @@ class TensorDB:
             content = self.tensor_db[["tensor_name", "origin", "round", "report", "tags"]]
             return f"TensorDB contents:\n{content}"
 
+    @profile
     def __str__(self) -> str:
         """Returns the string representation of the TensorDB object.
 
@@ -75,6 +83,7 @@ class TensorDB:
         """
         return self.__repr__()
 
+    @profile
     def clean_up(self, remove_older_than: int = 1) -> None:
         """Removes old entries from the database to prevent it from becoming
         too large and slow.
@@ -89,11 +98,20 @@ class TensorDB:
         current_round = self.tensor_db["round"].astype(int).max()
         if current_round == ROUND_PLACEHOLDER:
             current_round = np.sort(self.tensor_db["round"].astype(int).unique())[-2]
+        # Keep only recent records
+        old_tensor_db = self.tensor_db
         self.tensor_db = self.tensor_db[
             (self.tensor_db["round"].astype(int) > current_round - remove_older_than)
             | self.tensor_db["report"]
-        ].reset_index(drop=True)
+        ].copy()  # Avoid unnecessary memory retention
 
+        self.tensor_db.reset_index(drop=True, inplace=True)
+
+        # Delete old DataFrame and force garbage collection
+        del old_tensor_db
+        gc.collect()
+
+    @profile
     def cache_tensor(self, tensor_key_dict: Dict[TensorKey, np.ndarray]) -> None:
         """Insert a tensor into TensorDB (dataframe).
 
@@ -106,25 +124,29 @@ class TensorDB:
         """
         entries_to_add = []
         with self.mutex:
+            old_tensor_db = self.tensor_db
             for tensor_key, nparray in tensor_key_dict.items():
                 tensor_name, origin, fl_round, report, tags = tensor_key
-                entries_to_add.append(
-                    pd.DataFrame(
+                new_entry = pd.DataFrame(
+                    [
                         [
-                            [
-                                tensor_name,
-                                origin,
-                                fl_round,
-                                report,
-                                tags,
-                                nparray,
-                            ]
-                        ],
-                        columns=list(self.tensor_db.columns),
-                    )
+                            tensor_name,
+                            origin,
+                            fl_round,
+                            report,
+                            tags,
+                            nparray,
+                        ]
+                    ],
+                    columns=list(self.tensor_db.columns),
                 )
+                entries_to_add.append(new_entry)
 
-            self.tensor_db = pd.concat([self.tensor_db, *entries_to_add], ignore_index=True)
+            self.tensor_db = pd.concat([self.tensor_db, *entries_to_add], ignore_index=True, copy=True)
+
+            del old_tensor_db
+            entries_to_add.clear()
+            gc.collect()
 
     def get_tensor_from_cache(self, tensor_key: TensorKey) -> Optional[np.ndarray]:
         """Perform a lookup of the tensor_key in the TensorDB.
@@ -151,6 +173,7 @@ class TensorDB:
             return None
         return np.array(df["nparray"].iloc[0])
 
+    @profile
     def get_tensors_by_round_and_tags(self, fl_round: int, tags: tuple) -> dict:
         """Retrieve all tensors that match the specified round and tags.
 
@@ -184,6 +207,7 @@ class TensorDB:
 
         return tensor_dict
 
+    @profile
     def get_aggregated_tensor(
         self,
         tensor_key: TensorKey,
@@ -279,6 +303,7 @@ class TensorDB:
 
         return np.array(agg_nparray)
 
+    @profile
     def _iterate(self, order_by: str = "round", ascending: bool = False) -> Iterator[pd.Series]:
         """Returns an iterator over the rows of the TensorDB, sorted by a
         specified column.
@@ -296,3 +321,10 @@ class TensorDB:
         rows = self.tensor_db[columns].sort_values(by=order_by, ascending=ascending).iterrows()
         for _, row in rows:
             yield row
+
+    def get_tensor_db_size(self):
+        size_in_bytes = self.tensor_db.memory_usage(deep=True).sum()
+        size_in_bytes += self.tensor_db['nparray'].apply(lambda x: x.nbytes if isinstance(x, np.ndarray) else 0).sum()
+        size_in_mib = log_size_in_mib(size_in_bytes)
+        print(f"Memory Usage of self.tensor_db: {size_in_mib:.2f} MiB")
+        return size_in_mib

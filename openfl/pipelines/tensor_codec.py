@@ -8,7 +8,7 @@ import numpy as np
 
 from openfl.pipelines import NoCompressionPipeline
 from openfl.utilities import TensorKey, change_tags
-
+from memory_profiler import profile
 
 class TensorCodec:
     """TensorCodec is responsible for the following.
@@ -23,6 +23,7 @@ class TensorCodec:
         lossless_pipeline: The pipeline used for lossless compression.
     """
 
+    @profile
     def __init__(self, compression_pipeline):
         """Initialize the TensorCodec.
 
@@ -35,6 +36,7 @@ class TensorCodec:
         else:
             self.lossless_pipeline = compression_pipeline
 
+    @profile
     def set_lossless_pipeline(self, lossless_pipeline):
         """
         Set lossless pipeline.
@@ -209,6 +211,7 @@ class TensorCodec:
 
         return new_model_tensor_key, base_model_nparray + delta
 
+    @profile
     def find_dependencies(self, tensor_key, send_model_deltas):
         """Resolve the tensors required to do the specified operation.
 

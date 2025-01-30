@@ -7,8 +7,10 @@
 import time
 from logging import getLogger
 from typing import Optional, Tuple
-
+from memory_profiler import profile
+import tracemalloc
 import grpc
+import gc
 
 from openfl.pipelines import NoCompressionPipeline
 from openfl.protocols import aggregator_pb2, aggregator_pb2_grpc, utils
@@ -449,6 +451,7 @@ class AggregatorGRPCClient:
 
     @_atomic_connection
     @_resend_data_on_reconnection
+    @profile
     def send_local_task_results(
         self,
         collaborator_name,
@@ -468,7 +471,9 @@ class AggregatorGRPCClient:
             named_tensors (List[aggregator_pb2.NamedTensorProto]): The list of
                 named tensors.
         """
+
         self._set_header(collaborator_name)
+
         request = aggregator_pb2.TaskResults(
             header=self.header,
             round_number=round_number,
@@ -484,6 +489,13 @@ class AggregatorGRPCClient:
 
         # also do other validation, like on the round_number
         self.validate_response(response, collaborator_name)
+        
+        del request
+        del stream
+        del response
+        
+        leaked_objects = gc.garbage
+        print("Uncollected objects in send_local_task_results : ", leaked_objects)
 
     def _get_trained_model(self, experiment_name, model_type):
         """Get trained model RPC.
