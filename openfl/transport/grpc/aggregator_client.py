@@ -483,8 +483,8 @@ class AggregatorGRPCClient:
         )
 
         # convert (potentially) long list of tensors into stream
-        stream = []
-        stream += utils.proto_to_datastream(request, self.logger)
+        #stream = []
+        stream = utils.proto_to_datastream(request, self.logger)
         response = self.stub.SendLocalTaskResults(iter(stream))
 
         # also do other validation, like on the round_number
@@ -493,6 +493,8 @@ class AggregatorGRPCClient:
         del request
         del stream
         del response
+
+        gc.collect()
         
         leaked_objects = gc.garbage
         print("Uncollected objects in send_local_task_results : ", leaked_objects)

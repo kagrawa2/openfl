@@ -352,6 +352,9 @@ class Collaborator:
         # [tk[0] for tk in required_tensorkeys]))
         input_tensor_dict = self.get_numpy_dict_for_tensorkeys(required_tensorkeys)
 
+        ref_count = sys.getrefcount(input_tensor_dict)
+        print(f"Reference count of input_tensor_dict: {ref_count}")
+
         # now we have whatever the model needs to do the task
         if hasattr(self.task_runner, "TASK_REGISTRY"):
             # New interactive python API

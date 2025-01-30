@@ -174,9 +174,6 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
         # set to "training" mode
         self.train()
         self.to(self.device)
-        
-        tracemalloc.start(25)
-        initial_snapshot = tracemalloc.take_snapshot()
 
         for epoch in range(epochs):
             self.logger.info(f"Run {epoch} epoch of {round_num} round")
@@ -184,16 +181,6 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
             if use_tqdm:
                 loader = tqdm.tqdm(loader, desc="train epoch")
             metric = self.train_(loader)
-
-        # Take a snapshot after training
-        final_snapshot = tracemalloc.take_snapshot()
-        top_stats = final_snapshot.compare_to(initial_snapshot, key_type="traceback")
-
-        print("\n Top 10 memory differences by function:\n")
-        for index, stat in enumerate(top_stats[:10], start=1):  # Limit to top 50
-            print(f"\n {index}. Memory Increased: {stat.size_diff / 1024:.2f} KiB")
-            for line in stat.traceback.format():  # Show full traceback
-                print(line)
 
         memory_used_metric = log_size_in_mib(asizeof.asizeof(metric))
         print("Size of local memory_used_metric in memory %s", memory_used_metric)        

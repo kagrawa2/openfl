@@ -333,6 +333,7 @@ def proto_to_datastream(proto, logger, max_buffer_size=(2 * 1024 * 1024)):
         reply: Chunks of the data stream for the remote connection.
     """
     npbytes = proto.SerializeToString()
+    npbytes_view = memoryview(npbytes)
     data_size = len(npbytes)
     buffer_size = data_size if max_buffer_size > data_size else max_buffer_size
     logger.debug(
@@ -342,11 +343,9 @@ def proto_to_datastream(proto, logger, max_buffer_size=(2 * 1024 * 1024)):
     )
 
     for i in range(0, data_size, buffer_size):
-        chunk = npbytes[i : i + buffer_size]
+        chunk = npbytes_view[i : i + buffer_size].tobytes()
         reply = base_pb2.DataStream(npbytes=chunk, size=len(chunk))
         yield reply
-    
-    del npbytes
 
 
 def get_headers(context) -> dict:

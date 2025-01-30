@@ -7,11 +7,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import psutil
+import os
 from typing import Iterator, Tuple
 from memory_profiler import profile
 from openfl.federated import PyTorchTaskRunner
 from openfl.utilities import Metric
 
+def print_memory_usage():
+    process = psutil.Process(os.getpid())
+    print(f"[TRAINING] RAM Usage: {process.memory_info().rss / (1024**2):.2f} MiB")
+
+def print_numpy_memory(arr):
+    print(f"[TRAINING] NumPy Memory: {arr.nbytes / (1024**2):.2f} MiB")
 
 class PyTorchCNN(PyTorchTaskRunner):
     """
@@ -105,8 +113,16 @@ class PyTorchCNN(PyTorchTaskRunner):
             loss.backward()
             self.optimizer.step()
             losses.append(loss.detach().cpu().numpy())
-        loss = np.mean(losses)
-        return Metric(name=self.loss_fn.__name__, value=np.array(loss))
+
+            del data, target, output, loss
+        #loss = np.mean(losses)
+        loss_arr = np.array(np.mean(losses))
+        print_numpy_memory(loss_arr)
+        losses = None
+        del losses
+        print_memory_usage()  # After training
+        #return Metric(name=self.loss_fn.__name__, value=np.array(loss))
+        return Metric(name=self.loss_fn.__name__, value=loss_arr)
 
     @profile
     def validate_(
