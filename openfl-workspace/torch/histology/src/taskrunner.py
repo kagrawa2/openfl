@@ -104,8 +104,12 @@ class PyTorchCNN(PyTorchTaskRunner):
             loss.backward()
             self.optimizer.step()
             losses.append(loss.detach().cpu().numpy())
-        loss = np.mean(losses)
-        return Metric(name=self.loss_fn.__name__, value=np.array(loss))
+
+            del data, target, output, loss
+        loss_arr = np.array(np.mean(losses))
+        losses = None
+        del losses
+        return Metric(name=self.loss_fn.__name__, value=loss_arr)
 
     def validate_(
         self, validation_dataloader: Iterator[Tuple[np.ndarray, np.ndarray]]
@@ -135,6 +139,7 @@ class PyTorchCNN(PyTorchTaskRunner):
                 # get the index of the max log-probability
                 pred = output.argmax(dim=1)
                 val_score += pred.eq(target).sum().cpu().numpy()
+                del data, target, output, pred
 
         accuracy = val_score / total_samples
         return Metric(name="accuracy", value=np.array(accuracy))

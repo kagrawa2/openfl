@@ -89,10 +89,17 @@ class TensorDB:
         current_round = self.tensor_db["round"].astype(int).max()
         if current_round == ROUND_PLACEHOLDER:
             current_round = np.sort(self.tensor_db["round"].astype(int).unique())[-2]
+        # Keep only recent records
+        old_tensor_db = self.tensor_db
         self.tensor_db = self.tensor_db[
             (self.tensor_db["round"].astype(int) > current_round - remove_older_than)
             | self.tensor_db["report"]
-        ].reset_index(drop=True)
+        ].copy()  # Avoid unnecessary memory retention
+
+        self.tensor_db.reset_index(drop=True, inplace=True)
+
+        # Delete old DataFrame
+        del old_tensor_db
 
     def cache_tensor(self, tensor_key_dict: Dict[TensorKey, np.ndarray]) -> None:
         """Insert a tensor into TensorDB (dataframe).
@@ -106,25 +113,28 @@ class TensorDB:
         """
         entries_to_add = []
         with self.mutex:
+            old_tensor_db = self.tensor_db
             for tensor_key, nparray in tensor_key_dict.items():
                 tensor_name, origin, fl_round, report, tags = tensor_key
-                entries_to_add.append(
-                    pd.DataFrame(
+                new_entry = pd.DataFrame(
+                    [
                         [
-                            [
-                                tensor_name,
-                                origin,
-                                fl_round,
-                                report,
-                                tags,
-                                nparray,
-                            ]
-                        ],
-                        columns=list(self.tensor_db.columns),
-                    )
+                            tensor_name,
+                            origin,
+                            fl_round,
+                            report,
+                            tags,
+                            nparray,
+                        ]
+                    ],
+                    columns=list(self.tensor_db.columns),
                 )
+                entries_to_add.append(new_entry)
 
-            self.tensor_db = pd.concat([self.tensor_db, *entries_to_add], ignore_index=True)
+            self.tensor_db = pd.concat([self.tensor_db, *entries_to_add], ignore_index=True, copy=True)
+
+            del old_tensor_db
+            entries_to_add.clear()
 
     def get_tensor_from_cache(self, tensor_key: TensorKey) -> Optional[np.ndarray]:
         """Perform a lookup of the tensor_key in the TensorDB.
