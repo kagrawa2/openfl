@@ -485,6 +485,9 @@ class AggregatorGRPCClient:
 
         # also do other validation, like on the round_number
         self.validate_response(response, collaborator_name)
+        del request
+        del stream
+        del response
 
     def _get_trained_model(self, experiment_name, model_type):
         """Get trained model RPC.

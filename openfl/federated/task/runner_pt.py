@@ -6,7 +6,6 @@
 
 from copy import deepcopy
 from typing import Iterator, Tuple
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -476,14 +475,16 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
         losses = []
         for data, target in train_dataloader:
             data, target = torch.tensor(data).to(self.device), torch.tensor(target).to(self.device)
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
             output = self(data)
             loss = self.loss_fn(output=output, target=target)
             loss.backward()
             self.optimizer.step()
             losses.append(loss.detach().cpu().numpy())
-        loss = np.mean(losses)
-        return Metric(name=self.loss_fn.__name__, value=np.array(loss))
+        loss_arr = np.array(np.mean(losses))
+        losses = None
+        del losses, output
+        return Metric(name=self.loss_fn.__name__, value=loss_arr)
 
     def validate_(self, validation_dataloader: Iterator[Tuple[np.ndarray, np.ndarray]]) -> Metric:
         """
@@ -514,6 +515,7 @@ class PyTorchTaskRunner(nn.Module, TaskRunner):
                 val_score += pred.eq(target).sum().cpu().numpy()
 
         accuracy = val_score / total_samples
+        del output, pred
         return Metric(name="accuracy", value=np.array(accuracy))
 
 

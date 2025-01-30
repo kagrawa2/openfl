@@ -189,6 +189,8 @@ class Collaborator:
             for task in tasks:
                 metrics = self.do_task(task, round_num)
                 logs.update(metrics)
+                metrics = None
+                del metrics
 
             # Round end
             self.tensor_db.clean_up(self.db_store_rounds)
@@ -335,8 +337,12 @@ class Collaborator:
         # send the results for this tasks; delta and compression will occur in
         # this function
         metrics = self.send_task_results(global_output_tensor_dict, round_number, task_name)
-        return metrics
 
+        del global_output_tensor_dict
+        del local_output_tensor_dict
+        del input_tensor_dict
+        return metrics
+    
     def get_numpy_dict_for_tensorkeys(self, tensor_keys):
         """Get tensor dictionary for specified tensorkey set.
 
@@ -523,6 +529,7 @@ class Collaborator:
             named_tensors,
         )
 
+        del named_tensors
         return metrics
 
     def nparray_to_named_tensor(self, tensor_key, nparray):
