@@ -6,6 +6,7 @@
 
 from copy import deepcopy
 from typing import Iterator, Tuple
+
 import numpy as np
 import torch
 import torch.nn as nn

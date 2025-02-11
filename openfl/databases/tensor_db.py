@@ -131,7 +131,9 @@ class TensorDB:
                 )
                 entries_to_add.append(new_entry)
 
-            self.tensor_db = pd.concat([self.tensor_db, *entries_to_add], ignore_index=True, copy=True)
+            self.tensor_db = pd.concat(
+                [self.tensor_db, *entries_to_add], ignore_index=True, copy=True
+            )
 
             del old_tensor_db
             entries_to_add.clear()

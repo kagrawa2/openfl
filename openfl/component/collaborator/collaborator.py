@@ -342,7 +342,7 @@ class Collaborator:
         del local_output_tensor_dict
         del input_tensor_dict
         return metrics
-    
+
     def get_numpy_dict_for_tensorkeys(self, tensor_keys):
         """Get tensor dictionary for specified tensorkey set.
 
