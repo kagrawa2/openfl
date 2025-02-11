@@ -162,6 +162,47 @@ def _resend_data_on_reconnection(func):
     return wrapper
 
 
+def _ensure_grpc_connection(max_retries=3):
+    """Decorator to ensure gRPC connection is active before making a call.
+
+    Args:
+        max_retries (int): Maximum number of retries before giving up.
+    """
+
+    def decorator(func):
+        def wrapper(self, *args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    grpc.channel_ready_future(self.channel).result(timeout=10)
+                    self.logger.info("gRPC channel is ready.")
+                    break
+                except grpc.FutureTimeoutError:
+                    self.logger.warning(f"gRPC channel is not ready. Attempt {attempt + 1} of {max_retries}. Retrying ...")
+                    self.reconnect()
+                    self.sleeping_policy.sleep()
+                except grpc.RpcError as e:
+                    self.logger.info(
+                        f"Failed to send data request to aggregator {self.uri}, error code {e.code()}"
+                    )
+                    if self.refetch_server_cert_callback is not None:
+                        self.logger.info("Refetching server certificate")
+                        self.root_certificate = self.refetch_server_cert_callback()
+                    self.sleeping_policy.sleep()
+            else:
+                # Final attempt after retries
+                try:
+                    grpc.channel_ready_future(self.channel).result(timeout=10)
+                    self.logger.info("Reconnected: gRPC channel is ready.")
+                except grpc.FutureTimeoutError:
+                    self.logger.error("Failed to reconnect gRPC channel after multiple attempts.")
+                    raise
+            response = func(self, *args, **kwargs)
+            return response
+
+        return wrapper
+    return decorator
+
+
 class AggregatorGRPCClient:
     """Client to the aggregator over gRPC-TLS.
 
@@ -369,8 +410,7 @@ class AggregatorGRPCClient:
 
         self.stub = aggregator_pb2_grpc.AggregatorStub(self.channel)
 
-    @_resend_data_on_reconnection
-    @_atomic_connection
+    @_ensure_grpc_connection(max_retries=5)
     def get_tasks(self, collaborator_name):
         """Get tasks from the aggregator.
 
@@ -394,8 +434,7 @@ class AggregatorGRPCClient:
             response.quit,
         )
 
-    @_resend_data_on_reconnection
-    @_atomic_connection
+    @_ensure_grpc_connection(max_retries=5)
     def get_aggregated_tensor(
         self,
         collaborator_name,
@@ -435,8 +474,7 @@ class AggregatorGRPCClient:
 
         return response.tensor
 
-    @_resend_data_on_reconnection
-    @_atomic_connection
+    @_ensure_grpc_connection(max_retries=5)
     def send_local_task_results(
         self,
         collaborator_name,
