@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Proto utils."""
+
 from openfl.protocols import base_pb2
 from openfl.utilities import TensorKey
 
@@ -345,8 +346,10 @@ def proto_to_datastream(proto, logger, max_buffer_size=(2 * 1024 * 1024)):
         yield reply
         reply = None
         chunk = None
+        del reply, chunk
 
     del npbytes, npbytes_view
+
 
 def get_headers(context) -> dict:
     """Get headers from context.
