@@ -196,6 +196,7 @@ class Collaborator:
 
         # Experiment end
         self.callbacks.on_experiment_end()
+        self.client.disconnect() # close gRPC connection after experiment
         logger.info("Received shutdown signal. Exiting...")
 
     def run_simulation(self):

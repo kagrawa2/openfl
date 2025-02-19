@@ -162,6 +162,39 @@ def _resend_data_on_reconnection(func):
     return wrapper
 
 
+def _ensure_grpc_connection():
+    """Decorator to ensure gRPC connection is active before making a call.
+       Reconnects if connection is not active.
+    """
+
+    def decorator(func):
+        def wrapper(self, *args, **kwargs):
+            while True:
+                try:
+                    grpc.channel_ready_future(self.channel).result(timeout=10)
+                    self.logger.debug("gRPC channel is ready.")
+                    break
+                except grpc.FutureTimeoutError:
+                    self.logger.warning("gRPC channel is not ready. Retrying ...")
+                    self.reconnect()
+                    self.sleeping_policy.sleep()
+                except grpc.RpcError as e:
+                    self.logger.info(
+                        f"Failed to send data request to aggregator {self.uri}, error code {e.code()}"
+                    )
+                    if self.refetch_server_cert_callback is not None:
+                        self.logger.info("Refetching server certificate")
+                        self.root_certificate = self.refetch_server_cert_callback()
+                    self.sleeping_policy.sleep()
+                    self.reconnect()
+
+            response = func(self, *args, **kwargs)
+            return response
+
+        return wrapper
+    return decorator
+
+
 class AggregatorGRPCClient:
     """Client to the aggregator over gRPC-TLS.
 
@@ -369,8 +402,7 @@ class AggregatorGRPCClient:
 
         self.stub = aggregator_pb2_grpc.AggregatorStub(self.channel)
 
-    @_resend_data_on_reconnection
-    @_atomic_connection
+    @_ensure_grpc_connection()
     def get_tasks(self, collaborator_name):
         """Get tasks from the aggregator.
 
@@ -394,8 +426,7 @@ class AggregatorGRPCClient:
             response.quit,
         )
 
-    @_resend_data_on_reconnection
-    @_atomic_connection
+    @_ensure_grpc_connection()
     def get_aggregated_tensor(
         self,
         collaborator_name,
@@ -435,8 +466,7 @@ class AggregatorGRPCClient:
 
         return response.tensor
 
-    @_resend_data_on_reconnection
-    @_atomic_connection
+    @_ensure_grpc_connection()
     def send_local_task_results(
         self,
         collaborator_name,
@@ -473,6 +503,7 @@ class AggregatorGRPCClient:
         # also do other validation, like on the round_number
         self.validate_response(response, collaborator_name)
 
+    @_ensure_grpc_connection()
     def _get_trained_model(self, experiment_name, model_type):
         """Get trained model RPC.
 
